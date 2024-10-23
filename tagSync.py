@@ -344,6 +344,9 @@ def manual_match(localid, stashid):
 
 if __name__ == "__main__":
   pass
+  # shallow high level matching only with simple rstrip and title case fixes
   #match_tags()
+  # full validation of tags, with repair.py file generated
   #scan_unchecked_tags()
+  # only prints out tags that only exist locally
   scan_repair_local()
