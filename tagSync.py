@@ -1,21 +1,22 @@
-import stashapi.log as log
 from stashapi.stashapp import StashInterface
 from stashapi.stashbox import StashBoxInterface
-import json
-import sys
 from tqdm import tqdm
 import random
 import urllib
 import sqlite
+from datetime import timedelta, datetime
+import random
+import config
 
 EXCLUDE_PREFIX = ["r:", "c:", ".", "stashdb", "Figure", "["]
 
-json_input = json.loads(sys.stdin.read())
-FRAGMENT_SERVER = json_input["server_connection"]
-stash = StashInterface(FRAGMENT_SERVER)
+#json_input = json.loads(sys.stdin.read())
+#FRAGMENT_SERVER = json_input["server_connection"]
+stash = StashInterface(config.FRAGMENT_SERVER)
 stashdb = StashBoxInterface(conn={ "stash": stash })
 
-BASEURL = f"{FRAGMENT_SERVER['Scheme']}://{FRAGMENT_SERVER['Host']}:{FRAGMENT_SERVER['Port']}/tags"
+BASEURL = f"{config.FRAGMENT_SERVER['Scheme']}://{config.FRAGMENT_SERVER['Host']}:{config.FRAGMENT_SERVER['Port']}/tags"
+dateThreshold = datetime.now() - timedelta(days=7)
 
 sqlite.migrate()
 
@@ -26,10 +27,14 @@ rename_errs = []
 stashdb_alias_errs = []
 local_alias_errs = []
 desc_errs = []
+deleted = []
 
 # mapping functions
 def map_local(localtag):
   return f"${BASEURL}/{localtag.get('id')}"
+
+def map_remote(remotetag):
+  return f"https://stashdb.org/tags/{remotetag.get('id')}"
 
 def map_remote_local(input):
   localtag = input[0]
@@ -40,6 +45,7 @@ def map_remote_local(input):
     errmsg += f" ({input[3]})"
   return errmsg
 
+# syncing functions
 def sync_tag(localid, field):
   localtag = stash.find_tag(localid)
   print(f"syncing {localid} {field} ({localtag.get('name')})")
@@ -69,6 +75,7 @@ def sync_tag(localid, field):
     sqlite.check_id(localid)
     tqdm.write(f"✅ validated {localtag.get('name')}")
 
+# validate tag
 def validate_tag(localtag, remotetag):
   nameerr = localtag.get("name") != remotetag.get("name")
   localAlias = set(localtag.get("aliases", []))
@@ -117,6 +124,7 @@ def get_desc_diff(localtag, remotetag):
     else:
       return "mismatch"
 
+# find remote tag and sync if possible
 def get_remote_tag(localtag):
   lookup_tag = sqlite.lookup_localid(localtag.get("id"))
   if lookup_tag:
@@ -126,7 +134,10 @@ def get_remote_tag(localtag):
     if remotetag is None:
       return None
     else:
-      sqlite.add_ids(localtag.get("id"), remotetag.get("id"))
+      try:
+        sqlite.add_ids(localtag.get("id"), remotetag.get("id"))
+      except:
+        print(f"failed to add {localtag.get('name')} to db with id {remotetag.get('id')}")
       return remotetag
 
 def tag_checked(localtag):
@@ -157,10 +168,15 @@ def easy_title_fix(localtag, remotetag):
 
 # high level match
 def match_tags():
-  tags = sqlite.get_unchecked()
+  tags = sqlite.get_unchecked(dateThreshold)
   for tag in tqdm(tags):
     localid = int(tag[0])
     localtag = stash.find_tag(localid)
+    if not localtag:
+        # does not exist, delete
+        sqlite.delete_id(localid)
+        sqlite.remove_error(localid)
+        continue
     name = localtag.get("name")
     present = tag_checked(localtag)
     iserror = sqlite.lookup_error(localid)
@@ -173,6 +189,11 @@ def match_tags():
     if remotetag is None:
       tqdm.write(f"❓ not found {name}")
       sqlite.add_error(localid, True, name)
+      continue
+    # check if remote tag still exists
+    if remotetag.get("deleted"):
+      tqdm.write(f"❌ remote tag deleted {name}")
+      deleted.append(localtag)
       continue
     result = validate_tag(localtag, remotetag)
     if result["description"]:
@@ -189,7 +210,6 @@ def match_tags():
 
 # check tag
 def check_tags(localtag, remotetag):
-
   name = localtag.get("name")
   tagid = int(localtag.get("id"))
   # run validation
@@ -239,21 +259,23 @@ def check_tags(localtag, remotetag):
 def scan_tags():
   # pull tags locally, iterate
   localtags = stash.find_tags(fragment="id name description aliases")
-  for tag in localtags:
-    tagid = int(tag.get("id"))
-    # skip checked tags
-    if tag_checked(tag):
-      continue
+  no_exist_tags = [ tag for tag in localtags if not (sqlite.lookup_error(int(tag.get("id"))) or sqlite.lookup_localid(int(tag.get("id")))) ]
+  random.shuffle(no_exist_tags)
+  print(f"checking {len(no_exist_tags)} tags")
+  for tag in tqdm(no_exist_tags):
     # get remote tag equivalent
     remotetag = get_remote_tag(tag)
     # no remote tag, skip
     if remotetag is None:
-      local_only.append(tagid)
+      local_only.append(tag)
+      sqlite.add_error(int(tag.get("id")), True, tag.get("name"))
       continue
+    elif remotetag:
+      print(f"found {tag.get('name')} {tag.get('id')} {remotetag.get('id')}")
   printerr()
 
 def scan_unchecked_tags():
-  tags = sqlite.get_unchecked()
+  tags = sqlite.get_unchecked(dateThreshold)
   random.shuffle(tags)
   print(f"checking {len(tags)} tags")
   for tag in tags[:]:
@@ -267,8 +289,12 @@ def scan_repair_local():
   localonly = sqlite.getall_errors()
   for tag in localonly:
     localtag = stash.find_tag(int(tag[0]))
+    if not localtag:
+      print(f"tag {tag[0]} does not exist")
+      sqlite.delete_id(tag[0])
+      sqlite.remove_error(tag[0])
+      continue
     local_only.append(localtag)
-    print(f"local only: {localtag.get('name')}")
   create_local_repair()
 
 # print errors
@@ -287,6 +313,8 @@ def printerr():
   # print(list(map(map_remote_local, local_alias_errs)))
   print("description mismatch:")
   print(list(map(map_remote_local, desc_errs)))
+  print("deleted:")
+  print(list(map(map_remote, deleted)))
 
 def starts_prefix(tagname):
   for PREFIX in EXCLUDE_PREFIX:
@@ -326,10 +354,10 @@ def create_run_file():
       f.write(f"# {map_remote_local(tag)}\n")
       f.write(f"#sync.sync_tag({tag[0].get('id')}, \"aliases\")\n\n")
     f.write("# local extra aliases:\n")
-    # for tag in local_alias_errs:
-    #   f.write(f"# {tag[0].get('name')}\n")
-    #   f.write(f"# {map_remote_local(tag)}\n")
-    #   f.write(f"#sync.sync_tag({tag[0].get('id')}, \"aliases\")\n\n")
+    for tag in local_alias_errs:
+      f.write(f"# {tag[0].get('name')}\n")
+      f.write(f"# {map_remote_local(tag)}\n")
+      f.write(f"#sync.sync_tag({tag[0].get('id')}, \"aliases\")\n\n")
     f.write("# description mismatch:\n")
     for tag in desc_errs:
       f.write(f"# {map_remote_local(tag)}\n")
@@ -340,13 +368,16 @@ def create_run_file():
 # manual match function
 def manual_match(localid, stashid):
   if (stashid != ""):
+    print(f"manual match {localid} {stashid}")
     sqlite.add_ids(localid, stashid)
 
 if __name__ == "__main__":
   pass
+  # get new tags
+  scan_tags()
   # shallow high level matching only with simple rstrip and title case fixes
-  #match_tags()
+  match_tags()
   # full validation of tags, with repair.py file generated
-  #scan_unchecked_tags()
+  scan_unchecked_tags()
   # only prints out tags that only exist locally
   scan_repair_local()

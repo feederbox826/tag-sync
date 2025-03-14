@@ -28,8 +28,15 @@ def migrate():
     setup_sqlite()
 
 def add_ids(local_id, stashdb_id):
-    cursor.execute("INSERT INTO stash_tags VALUES (?, ?, NULL, FALSE)", (local_id, stashdb_id))
-    db.commit()
+    # check if exists
+    cursor.execute("SELECT * FROM stash_tags WHERE local_id = ?", [local_id])
+    existing = cursor.fetchone()
+    if existing:
+        cursor.execute("UPDATE stash_tags SET stashdb_id = ? WHERE local_id = ?", (stashdb_id, local_id))
+        db.commit()
+    else:
+        cursor.execute("INSERT INTO stash_tags VALUES (?, ?, NULL, FALSE)", (local_id, stashdb_id))
+        db.commit()
 
 def check_id(local_id):
     now = str(datetime.now())
@@ -40,9 +47,13 @@ def lookup_localid(local_id):
     cursor.execute("SELECT * FROM stash_tags WHERE local_id = ?", [local_id])
     return cursor.fetchone()
 
-def get_unchecked():
-    cursor.execute("SELECT * FROM stash_tags WHERE check_time IS NULL")
+def get_unchecked(date_threshold):
+    cursor.execute("SELECT * FROM stash_tags WHERE check_time IS NULL OR check_time < ?", [date_threshold])
     return cursor.fetchall()
+
+def delete_id(local_id):
+    cursor.execute("DELETE FROM stash_tags WHERE local_id = ?", [local_id])
+    db.commit()
 
 def add_error(local_id, missing, name):
     cursor.execute("INSERT INTO stash_tags_errors VALUES (?, ?, ?)", (local_id, missing, name))
