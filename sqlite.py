@@ -56,7 +56,7 @@ def delete_id(local_id):
     db.commit()
 
 def add_error(local_id, missing, name):
-    cursor.execute("INSERT INTO stash_tags_errors VALUES (?, ?, ?)", (local_id, missing, name))
+    cursor.execute("INSERT INTO stash_tags_errors VALUES (?, ?, ?)", (local_id, name, missing))
     db.commit()
 
 def error_add_name(local_id, name):

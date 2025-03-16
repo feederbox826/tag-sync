@@ -1,3 +1,7 @@
+# disable tls warnings
+import urllib3
+urllib3.disable_warnings()
+
 from stashapi.stashapp import StashInterface
 from stashapi.stashbox import StashBoxInterface
 from tqdm import tqdm
@@ -10,9 +14,7 @@ import config
 
 EXCLUDE_PREFIX = ["r:", "c:", ".", "stashdb", "Figure", "["]
 
-#json_input = json.loads(sys.stdin.read())
-#FRAGMENT_SERVER = json_input["server_connection"]
-stash = StashInterface(config.FRAGMENT_SERVER)
+stash = StashInterface(config.FRAGMENT_SERVER, verify_ssl=False)
 stashdb = StashBoxInterface(conn={ "stash": stash })
 
 BASEURL = f"{config.FRAGMENT_SERVER['Scheme']}://{config.FRAGMENT_SERVER['Host']}:{config.FRAGMENT_SERVER['Port']}/tags"
@@ -40,13 +42,13 @@ def map_remote_local(input):
   localtag = input[0]
   remotetag = input[1]
   err = input[2]
-  errmsg =  f"https://stashdb.org/tags/{remotetag.get('id')} -> {BASEURL}/{localtag.get('id')} - {err}"
+  errmsg = f"https://stashdb.org/tags/{remotetag.get('id')} -> {BASEURL}/{localtag.get('id')} \n# {err}"
   if len(input) > 3:
     errmsg += f" ({input[3]})"
   return errmsg
 
 # syncing functions
-def sync_tag(localid, field):
+def sync_tag(localid, field, overwrite=False):
   localtag = stash.find_tag(localid)
   print(f"syncing {localid} {field} ({localtag.get('name')})")
   stashid = sqlite.lookup_localid(localid)[1]
@@ -58,9 +60,10 @@ def sync_tag(localid, field):
       tqdm.write("updated description")
   elif (field == "aliases"):
     stashtag_aliases = set(stashtag.get("aliases"))
+    stashtag_filtered = set(filter(lambda alias: alias.isascii(), stashtag_aliases))
     localtag_aliases = set(localtag.get("aliases"))
-    if (stashtag_aliases != localtag_aliases):
-      newset = stashtag_aliases.union(localtag_aliases)
+    if (stashtag_filtered != localtag_aliases):
+      newset = stashtag_filtered if overwrite else stashtag_filtered.union(localtag_aliases)
       stash.update_tag({ "id": localid, "aliases": list(newset) })
       tqdm.write("updated aliases")
   elif (field == "name"):
@@ -108,12 +111,16 @@ def get_rename_diff(localtag, remotetag):
 def get_alias_diff(localtag, remotetag):
   localAlias = set(localtag.get("aliases"))
   remoteAlias = set(remotetag.get("aliases"))
-  exclusive = localAlias ^ remoteAlias
-  exclusive = list(filter(lambda alias: alias.isascii(), exclusive))
+  remoteAliasFilter = set(filter(lambda alias: alias.isascii(), remoteAlias))
+  exclusive = localAlias ^ remoteAliasFilter
   if localAlias.issubset(remoteAlias):
     return [exclusive, "stashdb"]
-  elif remoteAlias.issubset(localAlias):
+  elif remoteAliasFilter.issubset(localAlias):
     return [exclusive, "local"]
+  else:
+    localExtra = localAlias - remoteAliasFilter
+    remoteExtra = remoteAliasFilter - localAlias
+    return [{ "local": localExtra, "stash": remoteExtra}, "mismatch"]
 
 def get_desc_diff(localtag, remotetag):
   localDesc = localtag.get("description")
@@ -184,6 +191,10 @@ def match_tags():
       sqlite.remove_error(localid)
       continue
     elif (present or iserror):
+      continue
+    # if starts with prefix, automatically mark as checked
+    if starts_prefix(name):
+      sqlite.add_error(localid, True, name)
       continue
     remotetag = get_remote_tag(localtag)
     if remotetag is None:
@@ -289,6 +300,7 @@ def scan_repair_local():
   localonly = sqlite.getall_errors()
   for tag in localonly:
     localtag = stash.find_tag(int(tag[0]))
+    remotetag = stashdb.find_tag(tag[1])
     if not localtag:
       print(f"tag {tag[0]} does not exist")
       sqlite.delete_id(tag[0])
@@ -309,8 +321,8 @@ def printerr():
   print("stashdb alias mismatch:")
   print(stashdb_alias_errs)
   print(list(map(map_remote_local, stashdb_alias_errs)))
-  # print("local alias mismatch:")
-  # print(list(map(map_remote_local, local_alias_errs)))
+  print("local alias mismatch:")
+  print(list(map(map_remote_local, local_alias_errs)))
   print("description mismatch:")
   print(list(map(map_remote_local, desc_errs)))
   print("deleted:")
@@ -328,8 +340,6 @@ def create_local_repair():
     f.write('import tagSync as sync\n')
     f.write(f"# local only:\n")
     for tag in local_only:
-      if tag.get("ignore_auto_tag"):
-        continue
       tagname = tag.get('name')
       if starts_prefix(tagname):
         continue
@@ -357,7 +367,7 @@ def create_run_file():
     for tag in local_alias_errs:
       f.write(f"# {tag[0].get('name')}\n")
       f.write(f"# {map_remote_local(tag)}\n")
-      f.write(f"#sync.sync_tag({tag[0].get('id')}, \"aliases\")\n\n")
+      f.write(f"#sync.sync_tag({tag[0].get('id')}, \"aliases\", True)\n\n")
     f.write("# description mismatch:\n")
     for tag in desc_errs:
       f.write(f"# {map_remote_local(tag)}\n")
@@ -370,6 +380,7 @@ def manual_match(localid, stashid):
   if (stashid != ""):
     print(f"manual match {localid} {stashid}")
     sqlite.add_ids(localid, stashid)
+    sqlite.remove_error(localid)
 
 if __name__ == "__main__":
   pass
