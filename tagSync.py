@@ -33,7 +33,7 @@ deleted = []
 
 # mapping functions
 def map_local(localtag):
-  return f"${BASEURL}/{localtag.get('id')}"
+  return f"{BASEURL}/{localtag.get('id')}"
 
 def map_remote(remotetag):
   return f"https://stashdb.org/tags/{remotetag.get('id')}"
