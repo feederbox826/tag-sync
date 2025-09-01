@@ -18,8 +18,7 @@ stash = StashInterface(config.FRAGMENT_SERVER, verify_ssl=False)
 stashdb = StashBoxInterface(conn={ "stash": stash })
 
 BASEURL = f"{config.FRAGMENT_SERVER['Scheme']}://{config.FRAGMENT_SERVER['Host']}:{config.FRAGMENT_SERVER['Port']}/tags"
-# dateThreshold = datetime.now() - timedelta(days=7)
-dateThreshold = datetime.now() + timedelta(days=7)
+dateThreshold = datetime.now() - timedelta(days=7)
 
 sqlite.migrate()
 
