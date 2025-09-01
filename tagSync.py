@@ -6,7 +6,7 @@ from stashapi.stashapp import StashInterface
 from stashapi.stashbox import StashBoxInterface
 from tqdm import tqdm
 import random
-import urllib
+import urllib.parse
 import sqlite
 from datetime import timedelta, datetime
 import random
@@ -18,7 +18,8 @@ stash = StashInterface(config.FRAGMENT_SERVER, verify_ssl=False)
 stashdb = StashBoxInterface(conn={ "stash": stash })
 
 BASEURL = f"{config.FRAGMENT_SERVER['Scheme']}://{config.FRAGMENT_SERVER['Host']}:{config.FRAGMENT_SERVER['Port']}/tags"
-dateThreshold = datetime.now() - timedelta(days=7)
+# dateThreshold = datetime.now() - timedelta(days=7)
+dateThreshold = datetime.now() + timedelta(days=7)
 
 sqlite.migrate()
 
@@ -204,7 +205,7 @@ def match_tags():
     # check if remote tag still exists
     if remotetag.get("deleted"):
       tqdm.write(f"❌ remote tag deleted {name}")
-      deleted.append(localtag)
+      deleted.append([localtag, remotetag, "deleted"])
       continue
     result = validate_tag(localtag, remotetag)
     if result["description"]:
@@ -221,6 +222,12 @@ def match_tags():
 
 # check tag
 def check_tags(localtag, remotetag):
+  # check deleted
+  if remotetag.get("deleted"):
+    print(f"remote tag deleted {localtag.get('name')}")
+    deleted.append([localtag, remotetag, "deleted"])
+    return
+  # get info
   name = localtag.get("name")
   tagid = int(localtag.get("id"))
   # run validation
@@ -289,7 +296,7 @@ def scan_unchecked_tags():
   tags = sqlite.get_unchecked(dateThreshold)
   random.shuffle(tags)
   print(f"checking {len(tags)} tags")
-  for tag in tags[:]:
+  for tag in tqdm(tags):
     localtag = stash.find_tag(int(tag[0]))
     remotetag = stashdb.find_tag(tag[1])
     check_tags(localtag, remotetag)
@@ -300,7 +307,6 @@ def scan_repair_local():
   localonly = sqlite.getall_errors()
   for tag in localonly:
     localtag = stash.find_tag(int(tag[0]))
-    remotetag = stashdb.find_tag(tag[1])
     if not localtag:
       print(f"tag {tag[0]} does not exist")
       sqlite.delete_id(tag[0])
@@ -326,7 +332,7 @@ def printerr():
   print("description mismatch:")
   print(list(map(map_remote_local, desc_errs)))
   print("deleted:")
-  print(list(map(map_remote, deleted)))
+  print(list(map(map_remote_local, deleted)))
 
 def starts_prefix(tagname):
   for PREFIX in EXCLUDE_PREFIX:
